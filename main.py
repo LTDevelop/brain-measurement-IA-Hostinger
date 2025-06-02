@@ -12,7 +12,7 @@ app = FastAPI()
 # Permitir frontend acessar
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ou coloque o domínio do seu site se quiser restringir
+    allow_origins=["*"],  # Substitua por seu domínio se quiser restringir
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,7 +70,12 @@ def process_image(req: ImageRequest):
         if len(horizontal_lines) >= 2:
             x_coords = [x for line in horizontal_lines for x in [line[0][0], line[0][2]]]
             x_min, x_max = min(x_coords), max(x_coords)
-            ruler_coords = {"x1": x_min, "y1": img.shape[0]-150, "x2": x_max, "y2": img.shape[0]}
+            ruler_coords = {
+                "x1": int(x_min),
+                "y1": int(img.shape[0] - 150),
+                "x2": int(x_max),
+                "y2": int(img.shape[0])
+            }
             total_dist_px = x_max - x_min
             scale = req.ruler_length_um / total_dist_px  # µm/pixel
             cv2.rectangle(img, (x_min, img.shape[0]-150), (x_max, img.shape[0]), (255,0,255), 2)
@@ -91,13 +96,13 @@ def process_image(req: ImageRequest):
         cv2.drawContours(img, [cnt], -1, (0,255,0), 2)
         cv2.putText(img, f"{diameter_um:.1f}", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
         organoids.append({
-            "x_px": x,
-            "y_px": y,
-            "width_px": w,
-            "height_px": h,
-            "diameter_um": round(diameter_um, 2),
-            "area_um2": round(area_um2, 2),
-            "volume_um3": round(volume_um3, 2)
+            "x_px": int(x),
+            "y_px": int(y),
+            "width_px": int(w),
+            "height_px": int(h),
+            "diameter_um": float(round(diameter_um, 2)),
+            "area_um2": float(round(area_um2, 2)),
+            "volume_um3": float(round(volume_um3, 2))
         })
 
     # Codificar imagem processada como base64
@@ -106,7 +111,7 @@ def process_image(req: ImageRequest):
     processed_image_base64 = f"data:image/png;base64,{processed_b64}"
 
     return {
-        "scale_factor": round(scale, 4) if scale else None,
+        "scale_factor": float(round(scale, 4)) if scale else None,
         "ruler_coords_px": ruler_coords if scale else None,
         "organoids": organoids,
         "processed_image_base64": processed_image_base64
