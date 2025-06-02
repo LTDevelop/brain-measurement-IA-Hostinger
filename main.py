@@ -3,6 +3,10 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
+@app.get("/")
+def home():
+    return {"message": "API online and working!"}
+
 @app.get("/analyze")
 def analyze_organoid():
     output = {
