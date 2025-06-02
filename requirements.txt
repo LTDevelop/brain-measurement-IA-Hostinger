@@ -3,5 +3,3 @@ uvicorn
 pydantic
 opencv-python-headless
 numpy
-scikit-image
-scipy

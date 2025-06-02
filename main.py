@@ -5,10 +5,6 @@ import base64
 import cv2
 import numpy as np
 import math
-from skimage import measure
-from skimage.segmentation import watershed
-from skimage.feature import peak_local_max
-from scipy import ndimage
 
 app = FastAPI()
 
@@ -19,77 +15,93 @@ class ImageRequest(BaseModel):
 @app.post("/process-image")
 def process_image(data: ImageRequest):
     try:
-        # Extrair base64 limpo
+        # Extrair imagem do base64
         header, encoded = data.image_base64.split(",", 1)
         image_data = base64.b64decode(encoded)
         image_array = np.frombuffer(image_data, np.uint8)
-        image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-        if image is None:
+        img = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+
+        if img is None:
             raise ValueError("Erro ao decodificar a imagem")
 
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-        _, binary = cv2.threshold(blurred, 240, 255, cv2.THRESH_BINARY_INV)
+        # Conversões e pré-processamento
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, brain_bin = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+        kernel = np.ones((3,3), np.uint8)
+        brain_bin = cv2.morphologyEx(brain_bin, cv2.MORPH_CLOSE, kernel)
 
-        kernel = np.ones((7, 7), np.uint8)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=2)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+        contours, _ = cv2.findContours(brain_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        distance = ndimage.distance_transform_edt(binary)
-        local_max_coords = peak_local_max(distance, min_distance=20, footprint=np.ones((5, 5)), labels=binary)
-        local_max = np.zeros_like(binary, dtype=bool)
-        local_max[tuple(local_max_coords.T)] = True
-        markers = measure.label(local_max)
-        labels = watershed(-distance, markers, mask=binary)
+        # Detecção da régua
+        roi_ruler = gray[-150:, :]
+        _, ruler_bin = cv2.threshold(roi_ruler, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        lines = cv2.HoughLinesP(ruler_bin, 1, np.pi/180, threshold=50, minLineLength=50, maxLineGap=10)
 
-        # Simulando detecção de régua fixa de 490 px
-        ruler_length_px = 490
-        scale_factor = data.ruler_length_um / ruler_length_px
+        scale = None
+        ruler_coords_px = {"x1": 0, "y1": 0, "x2": 0, "y2": 0}
+        if lines is not None:
+            horizontal_lines = []
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                angle = abs(np.degrees(np.arctan2(y2-y1, x2-x1)))
+                if angle < 5:
+                    horizontal_lines.append(line)
 
+            if len(horizontal_lines) >= 2:
+                x_coords = [x for line in horizontal_lines for x in [line[0][0], line[0][2]]]
+                x_min, x_max = min(x_coords), max(x_coords)
+                total_dist_px = x_max - x_min
+                scale = data.ruler_length_um / total_dist_px  # um/pixel
+                ruler_coords_px = {
+                    "x1": int(x_min),
+                    "y1": img.shape[0] - 150,
+                    "x2": int(x_max),
+                    "y2": img.shape[0] - 150
+                }
+
+        # Detecção de organoides
         organoids = []
-        for region in measure.regionprops(labels):
-            equivalent_diameter_um = region.equivalent_diameter * scale_factor
-            if 100 <= equivalent_diameter_um <= 3000:
-                area_um2 = region.area * (scale_factor ** 2)
-                radius_um = equivalent_diameter_um / 2
-                volume_um3 = (4/3) * math.pi * (radius_um ** 3)
+        for cnt in contours:
+            area_px = cv2.contourArea(cnt)
+            if area_px < 150:
+                continue
+            area_um2 = (area_px * scale * scale) if scale else 0
+            if scale and area_um2 > 50000:  # ~5 mm² em um²
+                continue
+            x, y, w, h = cv2.boundingRect(cnt)
+            diameter_um = math.sqrt(4 * area_um2 / math.pi) if scale else 0
+            radius_um = diameter_um / 2
+            volume_um3 = (4/3) * math.pi * (radius_um ** 3) if scale else 0
 
-                minr, minc, maxr, maxc = region.bbox
-                organoids.append({
-                    "x_px": minc,
-                    "y_px": minr,
-                    "width_px": maxc - minc,
-                    "height_px": maxr - minr,
-                    "diameter_um": round(equivalent_diameter_um, 2),
-                    "area_um2": round(area_um2, 2),
-                    "volume_um3": round(volume_um3, 2)
-                })
+            organoids.append({
+                "x_px": x,
+                "y_px": y,
+                "width_px": w,
+                "height_px": h,
+                "diameter_um": round(diameter_um, 2),
+                "area_um2": round(area_um2, 2),
+                "volume_um3": round(volume_um3, 2)
+            })
 
-                # Marcar visualmente
-                cv2.rectangle(image, (minc, minr), (maxc, maxr), (0, 255, 0), 2)
+            # Desenhar contornos
+            cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-        # Codificar imagem final
-        _, buffer = cv2.imencode('.png', image)
+        # Codificar imagem com marcações
+        _, buffer = cv2.imencode('.png', img)
         processed_base64 = base64.b64encode(buffer).decode("utf-8")
         processed_image_base64 = f"data:image/png;base64,{processed_base64}"
 
-        response = {
-            "scale_factor": scale_factor,
-            "ruler_coords_px": {
-                "x1": 50,
-                "y1": 550,
-                "x2": 540,
-                "y2": 550
-            },
+        return JSONResponse(content={
+            "scale_factor": scale if scale else 0,
+            "ruler_coords_px": ruler_coords_px,
             "organoids": organoids,
             "processed_image_base64": processed_image_base64
-        }
-
-        return JSONResponse(content=response)
+        })
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
-def root():
-    return {"message": "API online e compatível com Horizons"}
+def home():
+    return {"message": "API de medição ativa"}
