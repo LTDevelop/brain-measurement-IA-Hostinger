@@ -1,5 +1,6 @@
-fastapi
-uvicorn
-pydantic
-opencv-python-headless
-numpy
+fastapi==0.110.2
+uvicorn==0.29.0
+pydantic==2.7.1
+python-multipart==0.0.9
+opencv-python-headless==4.9.0.80
+numpy==1.26.4
